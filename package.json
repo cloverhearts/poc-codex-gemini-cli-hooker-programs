@@ -1,0 +1,22 @@
+{
+  "name": "remote-stdio-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote control stdio orchestration CLI for AI agents.",
+  "engines": {
+    "node": ">=25"
+  },
+  "bin": {
+    "remote-stdio-ai": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "install:pty": "node scripts/install-node-pty.js",
+    "check:pty": "node src/index.js --check-pty",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0"
+  }
+}
