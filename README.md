@@ -38,15 +38,21 @@
 - `node-pty` 별도 설치 스크립트
 - 메인 프로세스에서 `node-pty` 누락 감지
 - `--install-deps`를 통한 자동 설치 시도
+- CLI 인자 파싱
+- `node-pty` 기반 PTY 실행기
+- `pipe` fallback 실행기
+- `prefix` 출력 중계
+- 에이전트별 transcript 수집
+- 타임아웃 및 실패 결과 처리
+- 성공/실패 테스트 케이스
 
 아직 구현 예정인 항목:
 
-- `gemini`, `codex` PTY 병렬 실행
-- 메인 입력을 각 PTY에 전송
-- PTY 출력 실시간 중계
 - `split`, `prefix` 화면 모드
-- 에이전트별 transcript 관리
-- 타임아웃 및 종료 처리
+- `split`, `tmux` 화면 모드
+- 에이전트별 정교한 Ready/Busy 감지 규칙
+- 실제 `gemini`, `codex` CLI 조합 검증
+- 인터랙티브 모드의 고도화
 
 ## 요구 사항
 
@@ -88,12 +94,26 @@ node src/index.js --check-pty
 node-pty 사용 가능
 ```
 
+`node-pty` 모듈 로드는 가능하지만 실제 PTY 프로세스 생성이 실패하는 환경에서는 다음처럼 표시됩니다.
+
+```text
+node-pty 사용 불가: posix_spawnp failed.
+```
+
 ## 자동 설치 옵션
 
 메인 프로세스 실행 시 `node-pty`가 없으면 자동 설치를 시도할 수 있습니다.
 
 ```bash
 node src/index.js --install-deps
+```
+
+이 명령은 `node-pty` 설치 또는 rebuild를 시도한 뒤 실제 PTY 생성 가능 여부까지 확인합니다.
+
+설치 확인과 재설치 시도를 함께 실행할 수 있습니다.
+
+```bash
+node src/index.js --install-deps --check-pty
 ```
 
 환경변수로도 자동 설치를 활성화할 수 있습니다.
@@ -104,34 +124,51 @@ REMOTE_STDIO_AUTO_INSTALL=1 node src/index.js
 
 자동 설치는 로컬 개발 편의 기능입니다. 일반적인 배포나 CI 환경에서는 `npm install` 단계에서 의존성을 미리 설치하는 것을 권장합니다.
 
-## 기본 실행
+`node-pty`가 이미 설치되어 있지만 실제 PTY 생성이 실패하는 경우 `--install-deps` 또는 `--install-deps --check-pty`는 `npm rebuild node-pty`를 먼저 시도하고, 그래도 실패하면 `node-pty` 재설치를 한 번 시도한 뒤 다시 확인합니다.
 
-현재는 `node-pty` 로드 확인까지만 연결되어 있습니다.
+macOS/Linux에서 `node-pty`의 `spawn-helper` 실행 권한이 빠져 `posix_spawnp failed`가 발생하는 경우에는 `--install-deps`가 실행 권한 복구도 함께 시도합니다.
+
+## 기본 실행
 
 ```bash
 npm start
 ```
 
-현재 출력 예시는 다음과 같습니다.
-
-```text
-remote-stdio-ai 메인 프로세스가 node-pty를 정상적으로 로드했습니다.
-다음 단계에서 PTY 기반 gemini/codex 실행기를 연결합니다.
-```
-
-향후 목표 실행 형태:
+에이전트나 옵션을 npm script에 전달할 때는 npm 표준 방식인 `--` 구분자를 사용하는 것을 권장합니다.
 
 ```bash
-node src/index.js --interactive
+npm run start -- --agents gemini "작업 지시문"
+```
+
+도움말은 다음 명령으로 확인할 수 있습니다.
+
+```bash
+node src/index.js --help
+```
+
+PTY 모드 실행 형태:
+
+```bash
+node src/index.js --agents gemini,codex --view prefix "작업 지시문"
+```
+
+`node-pty`가 실제 spawn에 실패하는 환경에서는 `pipe` 모드를 사용할 수 있습니다.
+
+```bash
+node src/index.js --agents gemini,codex --view pipe "작업 지시문"
 ```
 
 예상 흐름:
 
 1. 메인 CLI가 `gemini`, `codex`용 PTY를 생성한다.
 2. 각 PTY에서 에이전트 CLI를 실행한다.
-3. 사용자가 메인 CLI에 프롬프트를 입력한다.
-4. 메인 CLI가 같은 입력을 각 에이전트 PTY에 전달한다.
-5. 각 에이전트의 출력을 메인 화면에 실시간 중계한다.
+3. 메인 CLI가 모든 에이전트의 입력 가능 상태를 기다린다.
+4. 사용자가 메인 CLI에 프롬프트를 입력한다.
+5. 모든 에이전트가 준비되면 메인 CLI가 같은 입력을 각 에이전트 PTY에 전달한다.
+6. 메인 CLI는 메시지 본문과 Enter 입력을 별도 PTY write 이벤트로 전달한다.
+   - 메시지 본문: `write(prompt)`
+   - Enter 입력: `write("\r")`
+7. 각 에이전트의 출력을 메인 화면에 실시간 중계한다.
 
 ## 예정 CLI 옵션
 
@@ -149,6 +186,14 @@ node src/index.js --json "작업 지시문"
 - `prefix`: 각 출력 줄 앞에 `[gemini]`, `[codex]` prefix를 붙여 표시
 - `tmux`: macOS/Linux에서 선택적으로 실제 tmux pane 사용
 - `pipe`: PTY 없이 stdout/stderr만 수집하는 fallback
+
+현재 구현에서 안정적으로 검증된 모드는 `prefix`와 `pipe`입니다.
+
+`split` 모드는 기본 분할 렌더러로 구현되어 있습니다. 완전한 터미널 에뮬레이터는 아니지만 에이전트별 출력 영역을 나눠 표시하고, 모든 에이전트가 준비된 뒤 동일 프롬프트와 Enter 입력을 broadcast합니다.
+
+Gemini/Codex 같은 TUI CLI는 준비 문구가 보인 직후에도 인증, MCP 부팅, 업데이트 알림 등 추가 출력이 이어질 수 있습니다. 이 때문에 기본 에이전트는 Ready 패턴 감지 후 짧은 quiet 대기 시간을 둔 뒤 프롬프트를 전송합니다.
+
+인터랙티브 모드에서는 에이전트 PTY를 프롬프트마다 재시작하지 않습니다. 프로그램 시작 시 생성한 PTY 세션을 유지하고, 다음 프롬프트를 같은 세션에 계속 전달합니다. 메시지 입력은 TUI 호환성을 위해 bracketed paste 시퀀스와 Enter 이벤트를 사용합니다.
 
 ## 프로젝트 구조
 

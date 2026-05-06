@@ -1,10 +1,17 @@
 import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import process from "node:process";
 
 const NODE_PTY_PACKAGE = "node-pty";
 
 export async function loadNodePty(options = {}) {
-  const { autoInstall = false } = options;
+  const { autoInstall = false, forceInstall = false } = options;
+
+  if (forceInstall) {
+    installNodePty();
+  }
+  repairNodePtyPermissions();
 
   try {
     return await importNodePty();
@@ -29,11 +36,35 @@ export async function loadNodePty(options = {}) {
   }
 }
 
-export async function checkNodePty() {
-  const pty = await loadNodePty();
+export async function checkNodePty(options = {}) {
+  const { autoInstall = false, repairInstall = false } = options;
+  let pty = await loadNodePty({ autoInstall });
+  let spawnCheck = await checkNodePtySpawn(pty);
+
+  if (!spawnCheck.ok && repairInstall) {
+    repairNodePtyPermissions();
+    spawnCheck = await checkNodePtySpawn(pty);
+  }
+
+  if (!spawnCheck.ok && repairInstall) {
+    rebuildNodePty();
+    repairNodePtyPermissions();
+    pty = await importNodePty();
+    spawnCheck = await checkNodePtySpawn(pty);
+
+    if (!spawnCheck.ok) {
+      installNodePty();
+      repairNodePtyPermissions();
+      pty = await importNodePty();
+      spawnCheck = await checkNodePtySpawn(pty);
+    }
+  }
+
   return {
-    ok: Boolean(pty?.spawn),
-    hasSpawn: typeof pty?.spawn === "function"
+    ok: Boolean(pty?.spawn) && spawnCheck.ok,
+    hasSpawn: typeof pty?.spawn === "function",
+    canSpawn: spawnCheck.ok,
+    error: spawnCheck.error
   };
 }
 
@@ -43,21 +74,48 @@ async function importNodePty() {
 }
 
 function installNodePty() {
+  runNpmCommand(["install", "node-pty@^1.0.0", "--save"], "node-pty 설치");
+}
+
+function rebuildNodePty() {
+  runNpmCommand(["rebuild", "node-pty"], "node-pty rebuild");
+}
+
+function runNpmCommand(args, label) {
   const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-  const result = spawnSync(npmCommand, ["install", "node-pty@^1.0.0", "--save"], {
+  const result = spawnSync(npmCommand, args, {
     stdio: "inherit",
     cwd: process.cwd(),
     env: process.env
   });
 
   if (result.error) {
-    throw new Error(`node-pty 설치 명령 실행 실패: ${result.error.message}`, {
+    throw new Error(`${label} 명령 실행 실패: ${result.error.message}`, {
       cause: result.error
     });
   }
 
   if (result.status !== 0) {
-    throw new Error(`node-pty 설치 실패. 종료 코드: ${result.status}`);
+    throw new Error(`${label} 실패. 종료 코드: ${result.status}`);
+  }
+}
+
+function repairNodePtyPermissions() {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const platformArch = `${process.platform}-${process.arch}`;
+  const helperPath = join(process.cwd(), "node_modules", NODE_PTY_PACKAGE, "prebuilds", platformArch, "spawn-helper");
+
+  if (!existsSync(helperPath)) {
+    return;
+  }
+
+  try {
+    chmodSync(helperPath, 0o755);
+  } catch {
+    // 권한 복구 실패는 이후 spawn 검사에서 명확한 오류로 드러난다.
   }
 }
 
@@ -67,4 +125,59 @@ function isMissingNodePty(error) {
     typeof error?.message === "string" &&
     error.message.includes(NODE_PTY_PACKAGE)
   );
+}
+
+function checkNodePtySpawn(pty) {
+  if (typeof pty?.spawn !== "function") {
+    return Promise.resolve({ ok: false, error: "node-pty spawn 함수를 찾을 수 없습니다." });
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let processHandle = null;
+
+    const settle = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      try {
+        processHandle?.kill?.();
+      } catch {
+        // 검사 종료 중 kill 실패는 무시한다.
+      }
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      settle({ ok: false, error: "node-pty spawn 확인 시간이 초과되었습니다." });
+    }, 1000);
+
+    try {
+      const command = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
+      const args = process.platform === "win32" ? ["/c", "echo", "ok"] : ["-lc", "printf ok"];
+      processHandle = pty.spawn(command, args, {
+        name: "xterm-color",
+        cols: 20,
+        rows: 5,
+        cwd: process.cwd(),
+        env: process.env
+      });
+      processHandle.onData((data) => {
+        if (String(data).includes("ok")) {
+          settle({ ok: true, error: null });
+        }
+      });
+      processHandle.onExit?.((event) => {
+        if (event?.exitCode === 0) {
+          settle({ ok: true, error: null });
+        } else {
+          settle({ ok: false, error: `node-pty spawn 종료 코드: ${event?.exitCode}` });
+        }
+      });
+    } catch (error) {
+      settle({ ok: false, error: error.message });
+    }
+  });
 }
