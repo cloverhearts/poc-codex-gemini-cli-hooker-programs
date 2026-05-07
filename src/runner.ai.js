@@ -180,11 +180,12 @@ function createSession({ agent, pty, timeoutMs, relay, cwd, env }) {
   }, timeoutMs);
 
   processHandle.onData((chunk) => {
+    const rawChunk = String(chunk);
     const cleanChunk =
-      agent.stripAnsi === false ? String(chunk) : stripAnsi(chunk);
+      agent.stripAnsi === false ? rawChunk : stripAnsi(rawChunk);
     transcript += cleanChunk;
     lastOutput = tailText(transcript);
-    relay?.onData?.(agent.name, cleanChunk);
+    relay?.onData?.(agent.name, rawChunk);
 
     if (activePrompt) {
       activePrompt.lastOutput = lastOutput;

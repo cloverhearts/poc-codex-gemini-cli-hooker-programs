@@ -1,9 +1,13 @@
-import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import process from "node:process";
 
 const NODE_PTY_PACKAGE = "node-pty";
+const require = createRequire(import.meta.url);
+const childProcess = require("node:child_process");
+const { spawnSync } = childProcess;
+let consoleListAgentPatched = false;
 
 export async function loadNodePty(options = {}) {
   const { autoInstall = false, forceInstall = false } = options;
@@ -69,8 +73,30 @@ export async function checkNodePty(options = {}) {
 }
 
 async function importNodePty() {
+  patchConptyConsoleListAgentStderr();
   const imported = await import(NODE_PTY_PACKAGE);
   return imported.default ?? imported;
+}
+
+function patchConptyConsoleListAgentStderr() {
+  if (consoleListAgentPatched || process.platform !== "win32") {
+    return;
+  }
+
+  const originalFork = childProcess.fork;
+  childProcess.fork = function forkWithHiddenConptyAgentStderr(modulePath, args, options) {
+    if (typeof modulePath !== "string" || !modulePath.includes("conpty_console_list_agent")) {
+      return originalFork.apply(this, arguments);
+    }
+
+    const forkArgs = Array.isArray(args) ? args : [];
+    const forkOptions = Array.isArray(args) ? options : args;
+    return originalFork.call(this, modulePath, forkArgs, {
+      ...(forkOptions ?? {}),
+      stdio: ["ignore", "ignore", "ignore", "ipc"]
+    });
+  };
+  consoleListAgentPatched = true;
 }
 
 function installNodePty() {

@@ -35,3 +35,6 @@
 [2026-05-07 03:00] Windows 입력 전달 문제를 해결하기 위해 bracketed paste를 비활성화하고 줄 바꿈 문자(\r\n)를 조정함. 또한 어떤 에이전트의 준비를 기다리는지 상태 메시지에 표시하도록 개선함.
 [2026-05-07 03:10] 프롬프트 감지 로직에 trimEnd()를 적용하고 정규표현식을 보강하여, 화면에 프롬프트가 보임에도 대기 상태가 해제되지 않는 문제를 개선함.
 [2026-05-07 12:52] TUI 출력 잡음으로 Ready 감지가 취소되어 interactive 모드에서 입력이 전달되지 않는 문제를 수정하고 OSC 제어문자 제거 테스트를 추가함.
+[2026-05-07 13:04] Windows node-pty 종료 시 conpty_console_list_agent의 AttachConsole failed 오류가 화면에 섞이지 않도록 내부 보조 프로세스 stderr를 숨김.
+[2026-05-07 13:08] split 화면이 에이전트 TUI 출력을 스크롤 로그처럼 누적하지 않도록 고정 screen buffer 렌더링으로 변경함.
+[2026-05-07 13:14] split interactive 입력을 raw keypress 방식에서 readline 방식으로 변경하여 한글 IME 조합 중 입력 표시 지연을 개선함.

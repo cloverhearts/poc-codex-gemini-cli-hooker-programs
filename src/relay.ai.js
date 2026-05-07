@@ -1,11 +1,11 @@
-import { getStringWidth } from "./ansi.ai.js";
+import { getStringWidth, stripAnsi } from "./ansi.ai.js";
 
 export function createPrefixRelay(output = process.stdout) {
   const buffers = new Map();
 
   return {
     onData(agentName, chunk) {
-      const text = String(chunk);
+      const text = stripAnsi(chunk);
       const previous = buffers.get(agentName) ?? "";
       const parts = `${previous}${text}`.split(/\r?\n/);
       buffers.set(agentName, parts.pop() ?? "");
@@ -26,9 +26,9 @@ export function createPrefixRelay(output = process.stdout) {
 }
 
 export function createSplitRelay(agentNames, output = process.stdout) {
-  const linesByAgent = new Map(agentNames.map((name) => [name, []]));
-  const buffers = new Map(agentNames.map((name) => [name, ""]));
-  const maxLines = Math.max(6, (output.rows ?? 30) - 8);
+  const screensByAgent = new Map(
+    agentNames.map((name) => [name, createTerminalScreen()]),
+  );
   let inputLine = "";
   let statusLine = "준비 중...";
   let renderScheduled = false;
@@ -48,39 +48,30 @@ export function createSplitRelay(agentNames, output = process.stdout) {
       if (closed) {
         return;
       }
-      const text = String(chunk);
-      const previous = buffers.get(agentName) ?? "";
-      const parts = `${previous}${text}`.split(/\r?\n/);
-      buffers.set(agentName, parts.pop() ?? "");
-
-      const lines = linesByAgent.get(agentName) ?? [];
-      for (const line of parts) {
-        lines.push(line);
-      }
-      linesByAgent.set(agentName, lines.slice(-maxLines));
+      const screen = screensByAgent.get(agentName);
+      screen?.write(String(chunk));
       scheduleRender();
     },
-    setInputLine(value) {
+    setInputLine(value, immediate = false) {
       inputLine = String(value);
-      scheduleRender();
+      if (immediate) {
+        render();
+      } else {
+        scheduleRender();
+      }
     },
-    setStatus(value) {
+    setStatus(value, immediate = false) {
       statusLine = String(value);
-      scheduleRender();
+      if (immediate) {
+        render();
+      } else {
+        scheduleRender();
+      }
     },
     flush() {
       if (closed) {
         return;
       }
-      for (const [agentName, rest] of buffers.entries()) {
-        if (!rest) {
-          continue;
-        }
-        const lines = linesByAgent.get(agentName) ?? [];
-        lines.push(rest);
-        linesByAgent.set(agentName, lines.slice(-maxLines));
-      }
-      buffers.clear();
       render();
     },
     close() {
@@ -105,21 +96,27 @@ export function createSplitRelay(agentNames, output = process.stdout) {
     setTimeout(() => {
       renderScheduled = false;
       render();
-    }, 100);
+    }, 30);
   }
 
   function render() {
     if (closed) {
       return;
     }
-    const names = [...linesByAgent.keys()];
+    const names = [...screensByAgent.keys()];
     const width = output.columns ?? 120;
+    const height = output.rows ?? 30;
     const columnCount = Math.max(1, names.length);
     const columnWidth = Math.max(
       24,
       Math.floor((width - columnCount - 1) / columnCount),
     );
+    const maxLines = Math.max(6, height - 8);
     const horizontal = "─".repeat(columnWidth);
+
+    for (const screen of screensByAgent.values()) {
+      screen.resize(columnWidth, maxLines);
+    }
 
     let frame = "";
     frame += `┌${names.map(() => horizontal).join("┬")}┐\n`;
@@ -128,9 +125,8 @@ export function createSplitRelay(agentNames, output = process.stdout) {
 
     for (let row = 0; row < maxLines; row += 1) {
       const cells = names.map((name) => {
-        const lines = linesByAgent.get(name) ?? [];
-        const start = Math.max(0, lines.length - maxLines);
-        return pad(lines[start + row] ?? "", columnWidth);
+        const screen = screensByAgent.get(name);
+        return pad(screen?.lineAt(row) ?? "", columnWidth);
       });
       frame += `│${cells.join("│")}│\n`;
     }
@@ -146,6 +142,263 @@ export function createSplitRelay(agentNames, output = process.stdout) {
     output.write("\x1b[H\x1b[2J");
     output.write(frame);
   }
+}
+
+function createTerminalScreen() {
+  let width = 80;
+  let height = 24;
+  let rows = createRows(width, height);
+  let cursorX = 0;
+  let cursorY = 0;
+  let pending = "";
+
+  return {
+    resize(nextWidth, nextHeight) {
+      const boundedWidth = Math.max(1, nextWidth);
+      const boundedHeight = Math.max(1, nextHeight);
+      if (boundedWidth === width && boundedHeight === height) {
+        return;
+      }
+      const previous = rows.map((row) => row.join(""));
+      width = boundedWidth;
+      height = boundedHeight;
+      rows = createRows(width, height);
+      for (
+        let index = 0;
+        index < Math.min(previous.length, height);
+        index += 1
+      ) {
+        writePlainText(previous[index].slice(0, width), index, 0);
+      }
+      cursorX = clamp(cursorX, 0, width - 1);
+      cursorY = clamp(cursorY, 0, height - 1);
+    },
+    write(value) {
+      pending += value;
+      pending = consumeInput(pending);
+    },
+    lineAt(index) {
+      return (rows[index] ?? []).join("").trimEnd();
+    },
+  };
+
+  function consumeInput(value) {
+    let index = 0;
+    while (index < value.length) {
+      const char = value[index];
+
+      if (char === "\x1b") {
+        const consumed = consumeEscape(value, index);
+        if (consumed === 0) {
+          return value.slice(index);
+        }
+        index += consumed;
+        continue;
+      }
+
+      if (char === "\r") {
+        cursorX = 0;
+        index += 1;
+        continue;
+      }
+
+      if (char === "\n") {
+        newline();
+        index += 1;
+        continue;
+      }
+
+      if (char === "\b") {
+        cursorX = Math.max(0, cursorX - 1);
+        index += 1;
+        continue;
+      }
+
+      if (char < " " || char === "\x7f") {
+        index += 1;
+        continue;
+      }
+
+      writeChar(char);
+      index += char.length;
+    }
+    return "";
+  }
+
+  function consumeEscape(value, start) {
+    const next = value[start + 1];
+    if (!next) {
+      return 0;
+    }
+
+    if (next === "]") {
+      const bellIndex = value.indexOf("\x07", start + 2);
+      const stIndex = value.indexOf("\x1b\\", start + 2);
+      const end =
+        bellIndex === -1
+          ? stIndex
+          : stIndex === -1
+            ? bellIndex
+            : Math.min(bellIndex, stIndex);
+      if (end === -1) {
+        return 0;
+      }
+      return end + (end === stIndex ? 2 : 1) - start;
+    }
+
+    if (next === "[") {
+      for (let end = start + 2; end < value.length; end += 1) {
+        const code = value[end];
+        if (code >= "@" && code <= "~") {
+          applyCsi(value.slice(start + 2, end), code);
+          return end - start + 1;
+        }
+      }
+      return 0;
+    }
+
+    if (next === "c") {
+      clearAll();
+    }
+    return 2;
+  }
+
+  function applyCsi(paramsText, code) {
+    const cleanParams = paramsText.replace(/[?>=]/g, "");
+    const params = cleanParams
+      .split(";")
+      .filter((part) => part.length > 0)
+      .map((part) => Number(part));
+
+    if (code === "H" || code === "f") {
+      cursorY = clamp((params[0] || 1) - 1, 0, height - 1);
+      cursorX = clamp((params[1] || 1) - 1, 0, width - 1);
+      return;
+    }
+    if (code === "A") {
+      cursorY = clamp(cursorY - (params[0] || 1), 0, height - 1);
+      return;
+    }
+    if (code === "B") {
+      cursorY = clamp(cursorY + (params[0] || 1), 0, height - 1);
+      return;
+    }
+    if (code === "C") {
+      cursorX = clamp(cursorX + (params[0] || 1), 0, width - 1);
+      return;
+    }
+    if (code === "D") {
+      cursorX = clamp(cursorX - (params[0] || 1), 0, width - 1);
+      return;
+    }
+    if (code === "G") {
+      cursorX = clamp((params[0] || 1) - 1, 0, width - 1);
+      return;
+    }
+    if (code === "J") {
+      clearDisplay(params[0] ?? 0);
+      return;
+    }
+    if (code === "K") {
+      clearLine(params[0] ?? 0);
+    }
+  }
+
+  function writePlainText(text, y, x) {
+    const previousX = cursorX;
+    const previousY = cursorY;
+    cursorX = x;
+    cursorY = y;
+    for (const char of text) {
+      writeChar(char);
+    }
+    cursorX = previousX;
+    cursorY = previousY;
+  }
+
+  function writeChar(char) {
+    const charWidth = getStringWidth(char);
+    const cellWidth = charWidth > 1 ? 2 : 1;
+    if (cursorX >= width) {
+      newline();
+    }
+    if (cellWidth === 2 && cursorX === width - 1) {
+      newline();
+    }
+
+    rows[cursorY][cursorX] = char;
+    if (cellWidth === 2 && cursorX + 1 < width) {
+      rows[cursorY][cursorX + 1] = "";
+    }
+    cursorX += cellWidth;
+    if (cursorX >= width) {
+      cursorX = width - 1;
+    }
+  }
+
+  function newline() {
+    cursorX = 0;
+    cursorY += 1;
+    if (cursorY >= height) {
+      rows.shift();
+      rows.push(createRow(width));
+      cursorY = height - 1;
+    }
+  }
+
+  function clearAll() {
+    rows = createRows(width, height);
+    cursorX = 0;
+    cursorY = 0;
+  }
+
+  function clearDisplay(mode) {
+    if (mode === 2 || mode === 3) {
+      clearAll();
+      return;
+    }
+    if (mode === 1) {
+      for (let y = 0; y < cursorY; y += 1) {
+        rows[y] = createRow(width);
+      }
+      for (let x = 0; x <= cursorX; x += 1) {
+        rows[cursorY][x] = " ";
+      }
+      return;
+    }
+    clearLine(0);
+    for (let y = cursorY + 1; y < height; y += 1) {
+      rows[y] = createRow(width);
+    }
+  }
+
+  function clearLine(mode) {
+    if (mode === 2) {
+      rows[cursorY] = createRow(width);
+      return;
+    }
+    if (mode === 1) {
+      for (let x = 0; x <= cursorX; x += 1) {
+        rows[cursorY][x] = " ";
+      }
+      return;
+    }
+    for (let x = cursorX; x < width; x += 1) {
+      rows[cursorY][x] = " ";
+    }
+  }
+}
+
+function createRows(width, height) {
+  return Array.from({ length: height }, () => createRow(width));
+}
+
+function createRow(width) {
+  return Array.from({ length: width }, () => " ");
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function pad(value, width) {
