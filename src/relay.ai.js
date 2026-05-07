@@ -1,3 +1,5 @@
+import { getStringWidth } from "./ansi.ai.js";
+
 export function createPrefixRelay(output = process.stdout) {
   const buffers = new Map();
 
@@ -19,7 +21,7 @@ export function createPrefixRelay(output = process.stdout) {
         }
       }
       buffers.clear();
-    }
+    },
   };
 }
 
@@ -35,6 +37,9 @@ export function createSplitRelay(agentNames, output = process.stdout) {
 
   if (output.isTTY) {
     output.write("\x1b[?1049h\x1b[?25l");
+    output.on("resize", () => {
+      scheduleRender();
+    });
   }
   render();
 
@@ -84,11 +89,12 @@ export function createSplitRelay(agentNames, output = process.stdout) {
       }
       closed = true;
       if (output.isTTY) {
+        output.removeAllListeners("resize");
         output.write("\x1b[?25h\x1b[?1049l");
       } else {
         output.write("\x1b[?25h\n");
       }
-    }
+    },
   };
 
   function scheduleRender() {
@@ -99,7 +105,7 @@ export function createSplitRelay(agentNames, output = process.stdout) {
     setTimeout(() => {
       renderScheduled = false;
       render();
-    }, 200);
+    }, 100);
   }
 
   function render() {
@@ -109,7 +115,10 @@ export function createSplitRelay(agentNames, output = process.stdout) {
     const names = [...linesByAgent.keys()];
     const width = output.columns ?? 120;
     const columnCount = Math.max(1, names.length);
-    const columnWidth = Math.max(24, Math.floor((width - columnCount - 1) / columnCount));
+    const columnWidth = Math.max(
+      24,
+      Math.floor((width - columnCount - 1) / columnCount),
+    );
     const horizontal = "─".repeat(columnWidth);
 
     let frame = "";
@@ -140,10 +149,27 @@ export function createSplitRelay(agentNames, output = process.stdout) {
 }
 
 function pad(value, width) {
-  const clipped = clip(String(value).replace(/\t/g, "  "), width);
-  return `${clipped}${" ".repeat(Math.max(0, width - clipped.length))}`;
+  const text = String(value).replace(/\t/g, "  ");
+  const currentWidth = getStringWidth(text);
+  if (currentWidth >= width) {
+    return clip(text, width);
+  }
+  return `${text}${" ".repeat(width - currentWidth)}`;
 }
 
 function clip(value, width) {
-  return value.length > width ? value.slice(0, Math.max(0, width - 1)) : value;
+  if (getStringWidth(value) <= width) {
+    return value;
+  }
+  let clipped = "";
+  let currentWidth = 0;
+  for (const char of value) {
+    const charWidth = getStringWidth(char);
+    if (currentWidth + charWidth > width - 1) {
+      break;
+    }
+    clipped += char;
+    currentWidth += charWidth;
+  }
+  return `${clipped}…`;
 }

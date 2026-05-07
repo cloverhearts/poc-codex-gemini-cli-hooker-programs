@@ -1,7 +1,15 @@
 import { spawn } from "node:child_process";
+import { isAbsolute } from "node:path";
 
 export async function runPipePrompt(options) {
-  const { agents, prompt, timeoutMs = 300000, relay = null, cwd = process.cwd(), env = process.env } = options;
+  const {
+    agents,
+    prompt,
+    timeoutMs = 300000,
+    relay = null,
+    cwd = process.cwd(),
+    env = process.env,
+  } = options;
 
   if (!prompt?.trim()) {
     throw new Error("빈 프롬프트는 실행할 수 없습니다.");
@@ -15,16 +23,18 @@ export async function runPipePrompt(options) {
         timeoutMs,
         relay,
         cwd,
-        env
-      })
-    )
+        env,
+      }),
+    ),
   );
 
   return {
     prompt,
-    startedAt: new Date(Math.min(...results.map((result) => Date.parse(result.startedAt)))).toISOString(),
+    startedAt: new Date(
+      Math.min(...results.map((result) => Date.parse(result.startedAt))),
+    ).toISOString(),
     finishedAt: new Date().toISOString(),
-    results
+    results,
   };
 }
 
@@ -59,7 +69,7 @@ function runPipeAgent({ agent, prompt, timeoutMs, relay, cwd, env }) {
         lastOutput,
         durationMs: Date.now() - startedAt.getTime(),
         startedAt: startedAt.toISOString(),
-        finishedAt: new Date().toISOString()
+        finishedAt: new Date().toISOString(),
       });
     };
 
@@ -68,11 +78,16 @@ function runPipeAgent({ agent, prompt, timeoutMs, relay, cwd, env }) {
     }, timeoutMs);
 
     try {
+      const useShell =
+        process.platform === "win32" &&
+        !isAbsolute(agent.command) &&
+        !agent.command.includes("\\") &&
+        !agent.command.includes("/");
       child = spawn(agent.command, agent.args ?? [], {
         cwd,
         env,
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"]
+        shell: useShell,
+        stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
       settle("failed", { error: error.message });
@@ -91,7 +106,7 @@ function runPipeAgent({ agent, prompt, timeoutMs, relay, cwd, env }) {
     child.on("close", (exitCode) => {
       settle(exitCode === 0 ? "success" : "failed", {
         exitCode,
-        error: exitCode === 0 ? null : `프로세스 종료 코드: ${exitCode}`
+        error: exitCode === 0 ? null : `프로세스 종료 코드: ${exitCode}`,
       });
     });
 
@@ -101,7 +116,10 @@ function runPipeAgent({ agent, prompt, timeoutMs, relay, cwd, env }) {
   function appendOutput(agentName, chunk, outputRelay) {
     const text = String(chunk);
     transcript += text;
-    lastOutput = transcript.length > 2000 ? transcript.slice(transcript.length - 2000) : transcript;
+    lastOutput =
+      transcript.length > 2000
+        ? transcript.slice(transcript.length - 2000)
+        : transcript;
     outputRelay?.onData?.(agentName, text);
   }
 }

@@ -215,6 +215,43 @@ test("Ready 패턴 이후 출력이 이어지면 quiet 대기 후 전송한다",
   assert.deepEqual(fakeProcess.writes.slice(0, 2), ["늦게 전달", "\r"]);
 });
 
+test("Ready 패턴 뒤에 TUI 잡음이 이어져도 프롬프트를 전송한다", async () => {
+  const fakeProcess = new FakePtyProcess();
+  const pty = {
+    spawn() {
+      queueMicrotask(() => fakeProcess.emitData("› Find and fix a bug in @filename"));
+      setTimeout(() => fakeProcess.emitData(`\r\n${" ".repeat(700)}\x1b]0;title\x07`), 5);
+      return fakeProcess;
+    }
+  };
+
+  await runPrompt({
+    agents: [
+      {
+        name: "codex",
+        command: "codex",
+        args: [],
+        promptRegex: /›|Run \/review/,
+        inputSuffix: "\r",
+        bracketedPaste: false,
+        readyQuietMs: 20,
+        idleCompletionMs: 10
+      }
+    ],
+    prompt: "잡음 이후 전달",
+    pty,
+    timeoutMs: 1000
+  });
+
+  assert.deepEqual(fakeProcess.writes.slice(0, 2), ["잡음 이후 전달", "\r"]);
+});
+
+test("OSC 터미널 제목 제어문자를 제거한다", async () => {
+  const { stripAnsi } = await import("../src/ansi.ai.js");
+
+  assert.equal(stripAnsi("\x1b]0;title\x07READY> "), "READY> ");
+});
+
 test("프로세스 생성 실패를 실패 결과로 반환한다", async () => {
   const pty = {
     spawn() {

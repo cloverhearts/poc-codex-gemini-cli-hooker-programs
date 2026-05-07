@@ -1,28 +1,31 @@
+const isWindows =
+  typeof process !== "undefined" && process.platform === "win32";
+
 export const defaultAgents = [
   {
     name: "gemini",
     command: "gemini",
     args: [],
-    promptRegex: /Type your message|>\s*$|❯\s*$/,
-    inputSuffix: "\r",
+    promptRegex: /Type your message|>\s*$|❯\s*|:\s*$/,
+    inputSuffix: isWindows ? "\r\n" : "\r",
     readyQuietMs: 1200,
-    enterDelayMs: 150,
+    enterDelayMs: 200,
     clearLineBeforeInput: true,
-    bracketedPaste: true
+    bracketedPaste: false,
   },
   {
     name: "codex",
     command: "codex",
     args: [],
-    promptRegex: /›|Run \/review|>\s*$|\$\s*$/,
-    inputSuffix: "\r",
+    promptRegex: /›|Run \/review|>\s*$|\$\s*|:\s*$/,
+    inputSuffix: isWindows ? "\r\n" : "\r",
     readyQuietMs: 1500,
-    enterDelayMs: 100,
+    enterDelayMs: 200,
     clearLineBeforeInput: true,
     completeOnReady: false,
     idleCompletionMs: 8000,
-    bracketedPaste: true
-  }
+    bracketedPaste: false,
+  },
 ];
 
 export function resolveAgents(agentNames, availableAgents = defaultAgents) {

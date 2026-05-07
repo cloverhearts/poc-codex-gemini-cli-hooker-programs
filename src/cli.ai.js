@@ -6,13 +6,13 @@ export function parseArgs(argv, env = process.env) {
   const options = {
     agents: [],
     timeoutMs: 300000,
-    view: "prefix",
+    view: "split",
     json: false,
     interactive: false,
     checkPty: false,
     installDeps: false,
     help: false,
-    prompt: ""
+    prompt: "",
   };
 
   const positional = [];
@@ -63,7 +63,7 @@ export function createHelpText() {
     "Remote Control stdio for AI CLI",
     "",
     "사용법:",
-    "  node src/index.js [옵션] \"작업 지시문\"",
+    '  node src/index.js [옵션] "작업 지시문"',
     "  node src/index.js --interactive",
     "",
     "옵션:",
@@ -73,7 +73,7 @@ export function createHelpText() {
     "  --json                  최종 결과를 JSON으로 출력",
     "  --check-pty             node-pty 로드 가능 여부 확인",
     "  --install-deps          node-pty 누락 시 자동 설치 시도",
-    "  --help                  도움말 출력"
+    "  --help                  도움말 출력",
   ].join("\n");
 }
 
@@ -110,11 +110,19 @@ function applyNpmRunConfig(options, positional, env) {
     }
   }
 
-  if (options.view === "prefix" && env.npm_config_view && env.npm_config_view !== "true") {
+  if (
+    options.view === "prefix" &&
+    env.npm_config_view &&
+    env.npm_config_view !== "true"
+  ) {
     options.view = parseView(env.npm_config_view);
   }
 
-  if (options.timeoutMs === 300000 && env.npm_config_timeout && env.npm_config_timeout !== "true") {
+  if (
+    options.timeoutMs === 300000 &&
+    env.npm_config_timeout &&
+    env.npm_config_timeout !== "true"
+  ) {
     options.timeoutMs = parseTimeout(env.npm_config_timeout);
   }
 }
