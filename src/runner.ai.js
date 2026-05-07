@@ -32,6 +32,7 @@ export function createPersistentPromptRunner(options) {
       relay,
       cwd,
       env,
+      agentCount: agents.length,
     }),
   );
 
@@ -111,7 +112,15 @@ async function waitForAllReady(sessions, relay) {
   await Promise.all(sessions.map((session) => session.waitUntilReady()));
 }
 
-function createSession({ agent, pty, timeoutMs, relay, cwd, env }) {
+function createSession({
+  agent,
+  pty,
+  timeoutMs,
+  relay,
+  cwd,
+  env,
+  agentCount = 1,
+}) {
   const createdAt = new Date();
   let state = "Init";
   let transcript = "";
@@ -142,11 +151,25 @@ function createSession({ agent, pty, timeoutMs, relay, cwd, env }) {
     spawnArgs = ["/c", fullCommandLine];
   }
 
+  function getPtyDimensions() {
+    const width = process.stdout.columns ?? 120;
+    const height = process.stdout.rows ?? 30;
+    const columnCount = Math.max(1, agentCount);
+    const cols = Math.max(
+      24,
+      Math.floor((width - columnCount - 1) / columnCount),
+    );
+    const rows = Math.max(6, height - 8);
+    return { cols, rows };
+  }
+
+  const initialDimensions = getPtyDimensions();
+
   try {
     processHandle = pty.spawn(spawnCommand, spawnArgs, {
       name: "xterm-color",
-      cols: 100,
-      rows: 30,
+      cols: initialDimensions.cols,
+      rows: initialDimensions.rows,
       cwd,
       env,
     });
@@ -164,6 +187,21 @@ function createSession({ agent, pty, timeoutMs, relay, cwd, env }) {
       isReady: () => true,
       agentName: () => agent.name,
     };
+  }
+
+  const handleResize = () => {
+    if (closed || !processHandle || typeof processHandle.resize !== "function")
+      return;
+    const dim = getPtyDimensions();
+    try {
+      processHandle.resize(dim.cols, dim.rows);
+    } catch {
+      // Ignore resize errors
+    }
+  };
+
+  if (process.stdout.isTTY) {
+    process.stdout.on("resize", handleResize);
   }
 
   const startupTimer = setTimeout(() => {
@@ -434,6 +472,9 @@ function createSession({ agent, pty, timeoutMs, relay, cwd, env }) {
 
   function close() {
     closed = true;
+    if (process.stdout.isTTY) {
+      process.stdout.off("resize", handleResize);
+    }
     clearTimeout(startupTimer);
     clearTimeout(readyTimer);
     if (activePrompt) {

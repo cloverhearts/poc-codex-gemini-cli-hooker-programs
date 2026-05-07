@@ -126,7 +126,9 @@ export function createSplitRelay(agentNames, output = process.stdout) {
     for (let row = 0; row < maxLines; row += 1) {
       const cells = names.map((name) => {
         const screen = screensByAgent.get(name);
-        return pad(screen?.lineAt(row) ?? "", columnWidth);
+        return screen
+          ? screen.lineAt(row, columnWidth)
+          : " ".repeat(columnWidth);
       });
       frame += `│${cells.join("│")}│\n`;
     }
@@ -151,6 +153,7 @@ function createTerminalScreen() {
   let cursorX = 0;
   let cursorY = 0;
   let pending = "";
+  let currentSgr = "";
 
   return {
     resize(nextWidth, nextHeight) {
@@ -159,16 +162,14 @@ function createTerminalScreen() {
       if (boundedWidth === width && boundedHeight === height) {
         return;
       }
-      const previous = rows.map((row) => row.join(""));
+      const previous = rows.map((row) => [...row]);
       width = boundedWidth;
       height = boundedHeight;
       rows = createRows(width, height);
-      for (
-        let index = 0;
-        index < Math.min(previous.length, height);
-        index += 1
-      ) {
-        writePlainText(previous[index].slice(0, width), index, 0);
+      for (let y = 0; y < Math.min(previous.length, height); y += 1) {
+        for (let x = 0; x < Math.min(previous[y].length, width); x += 1) {
+          rows[y][x] = { ...previous[y][x] };
+        }
       }
       cursorX = clamp(cursorX, 0, width - 1);
       cursorY = clamp(cursorY, 0, height - 1);
@@ -177,8 +178,42 @@ function createTerminalScreen() {
       pending += value;
       pending = consumeInput(pending);
     },
-    lineAt(index) {
-      return (rows[index] ?? []).join("").trimEnd();
+    lineAt(index, renderWidth) {
+      const row = rows[index] ?? [];
+      let lineStr = "";
+      let lastSgr = null;
+      let currentWidth = 0;
+
+      for (let i = 0; i < row.length; i++) {
+        if (currentWidth >= renderWidth) break;
+
+        const cell = row[i];
+        if (cell.char === "") continue;
+
+        const charWidth = getStringWidth(cell.char);
+        if (currentWidth + charWidth > renderWidth) {
+          lineStr += " ";
+          currentWidth += 1;
+          break;
+        }
+
+        if (cell.sgr !== lastSgr) {
+          lineStr += cell.sgr ? `\x1b[0m${cell.sgr}` : `\x1b[0m`;
+          lastSgr = cell.sgr;
+        }
+        lineStr += cell.char;
+        currentWidth += charWidth;
+      }
+
+      if (lastSgr) {
+        lineStr += `\x1b[0m`;
+      }
+
+      if (currentWidth < renderWidth) {
+        lineStr += " ".repeat(renderWidth - currentWidth);
+      }
+
+      return lineStr;
     },
   };
 
@@ -259,6 +294,7 @@ function createTerminalScreen() {
 
     if (next === "c") {
       clearAll();
+      currentSgr = "";
     }
     return 2;
   }
@@ -270,6 +306,14 @@ function createTerminalScreen() {
       .filter((part) => part.length > 0)
       .map((part) => Number(part));
 
+    if (code === "m") {
+      if (params.length === 0 || params.includes(0)) {
+        currentSgr = "";
+      } else {
+        currentSgr += `\x1b[${paramsText}m`;
+      }
+      return;
+    }
     if (code === "H" || code === "f") {
       cursorY = clamp((params[0] || 1) - 1, 0, height - 1);
       cursorX = clamp((params[1] || 1) - 1, 0, width - 1);
@@ -307,13 +351,16 @@ function createTerminalScreen() {
   function writePlainText(text, y, x) {
     const previousX = cursorX;
     const previousY = cursorY;
+    const previousSgr = currentSgr;
     cursorX = x;
     cursorY = y;
+    currentSgr = "";
     for (const char of text) {
       writeChar(char);
     }
     cursorX = previousX;
     cursorY = previousY;
+    currentSgr = previousSgr;
   }
 
   function writeChar(char) {
@@ -326,9 +373,9 @@ function createTerminalScreen() {
       newline();
     }
 
-    rows[cursorY][cursorX] = char;
+    rows[cursorY][cursorX] = { char, sgr: currentSgr };
     if (cellWidth === 2 && cursorX + 1 < width) {
-      rows[cursorY][cursorX + 1] = "";
+      rows[cursorY][cursorX + 1] = { char: "", sgr: "" };
     }
     cursorX += cellWidth;
     if (cursorX >= width) {
@@ -362,7 +409,7 @@ function createTerminalScreen() {
         rows[y] = createRow(width);
       }
       for (let x = 0; x <= cursorX; x += 1) {
-        rows[cursorY][x] = " ";
+        rows[cursorY][x] = { char: " ", sgr: currentSgr };
       }
       return;
     }
@@ -379,12 +426,12 @@ function createTerminalScreen() {
     }
     if (mode === 1) {
       for (let x = 0; x <= cursorX; x += 1) {
-        rows[cursorY][x] = " ";
+        rows[cursorY][x] = { char: " ", sgr: currentSgr };
       }
       return;
     }
     for (let x = cursorX; x < width; x += 1) {
-      rows[cursorY][x] = " ";
+      rows[cursorY][x] = { char: " ", sgr: currentSgr };
     }
   }
 }
@@ -394,7 +441,7 @@ function createRows(width, height) {
 }
 
 function createRow(width) {
-  return Array.from({ length: width }, () => " ");
+  return Array.from({ length: width }, () => ({ char: " ", sgr: "" }));
 }
 
 function clamp(value, min, max) {
